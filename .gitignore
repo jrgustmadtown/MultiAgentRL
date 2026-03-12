@@ -1,2 +1,5 @@
-rollout.png
+rollout*.png
 planning_loss.png
+__pycache__/
+__pycache__/*
+.venv/

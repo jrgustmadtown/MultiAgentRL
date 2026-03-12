@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,8 +11,10 @@ import matplotlib.pyplot as plt
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 LR = 1e-3
-GRID_SIZE = 10
+GRID_SIZE = 5
 GAMMA = 0.9
+TARGET_UPDATE_EVERY = 200
+GRAD_CLIP_NORM = 1.0
 CRASH_PENALTY = -1
 STAY_PENALTY = -0.5
 LIVING_COST = 0.1
@@ -50,8 +53,10 @@ def neural_planning(env, iterations=8000):
     states and using the environment rules to compute targets.
     """
     net = DQN().to(device)
+    target_net = DQN().to(device)
+    target_net.load_state_dict(net.state_dict())
     optimizer = optim.Adam(net.parameters(), lr=LR)
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.SmoothL1Loss()
 
     losses = []
 
@@ -76,7 +81,7 @@ def neural_planning(env, iterations=8000):
                     v_next = 0.0
                 else:
                     sn_tensor = encode_state(s_next, env.grid_size)
-                    q_next = net(sn_tensor).view(4, 4)
+                    q_next = target_net(sn_tensor).view(4, 4)
                     # Minimax: Maximize the guaranteed value (min over opponent)
                     v_next = torch.max(torch.min(q_next, dim=1)[0]).item()
                 
@@ -88,7 +93,11 @@ def neural_planning(env, iterations=8000):
         
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(net.parameters(), GRAD_CLIP_NORM)
         optimizer.step()
+
+        if (i + 1) % TARGET_UPDATE_EVERY == 0:
+            target_net.load_state_dict(net.state_dict())
 
         losses.append(loss.item())
 
@@ -210,11 +219,18 @@ def draw_trajectory(ax, traj, grid_size, title="", subtitle=""):
                 length_includes_head=True
             )
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Minimax DQN Car Game")
+    parser.add_argument("--iterations", type=int, default=8000, help="Number of planning iterations")
+    args = parser.parse_args()
+
     env = CarGame(grid_size=GRID_SIZE)
 
     # Neural planning
-    net, loss = neural_planning(env)
+    net, loss = neural_planning(env, iterations=args.iterations)
     policy = get_policy(net, env)
+
+    # Filter to non-crash states (players not at same position)
+    valid_states = [s for s in env.states if (s[0], s[1]) != (s[2], s[3])]
 
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
     is_headless = plt.get_backend().lower() == "agg" or not has_display
@@ -223,7 +239,7 @@ if __name__ == "__main__":
     idx = [0]
 
     def update_plot(event=None):
-        s0 = env.states[idx[0]]
+        s0 = valid_states[idx[0]]
         traj = rollout(env, s0, policy)
 
         # Compute Stats
@@ -270,11 +286,11 @@ if __name__ == "__main__":
         bnext = Button(axnext, "Next")
 
         def prev_state(event):
-            idx[0] = (idx[0] - 1) % len(env.states)
+            idx[0] = (idx[0] - 1) % len(valid_states)
             update_plot()
 
         def next_state(event):
-            idx[0] = (idx[0] + 1) % len(env.states)
+            idx[0] = (idx[0] + 1) % len(valid_states)
             update_plot()
 
         bprev.on_clicked(prev_state)
@@ -283,10 +299,15 @@ if __name__ == "__main__":
         update_plot()
         plt.show()
     else:
-        update_plot()
-        rollout_path = "rollout.png"
-        fig.savefig(rollout_path, dpi=150, bbox_inches="tight")
-        print(f"Headless mode detected (backend={plt.get_backend()}). Saved {rollout_path}")
+        # Save 5 random rollouts in headless mode
+        sample_states = random.sample(valid_states, min(5, len(valid_states)))
+        print(f"Headless mode detected (backend={plt.get_backend()}). Saving 5 rollouts...")
+        for i, s0 in enumerate(sample_states):
+            idx[0] = valid_states.index(s0)
+            update_plot()
+            rollout_path = f"rollout_{i+1}.png"
+            fig.savefig(rollout_path, dpi=150, bbox_inches="tight")
+            print(f"  Saved {rollout_path} from {s0}")
 
     plt.figure()
     plt.plot(loss)
