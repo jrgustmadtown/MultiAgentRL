@@ -5,6 +5,7 @@ Two-player general-sum game where each player has their own reward function.
 Requires Nash equilibrium computation instead of minimax.
 """
 import argparse
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -15,13 +16,15 @@ import os
 from collections import deque
 import matplotlib.pyplot as plt
 
+warnings.filterwarnings("ignore", message=".*equilibria was returned.*")
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 LR = 1e-3
 GRID_SIZE = 5
 STEP_SIZE = 1 / GRID_SIZE  # Each move is a step of this size in [0, 1) space
 GAMMA = 0.9
-TARGET_UPDATE_EVERY = 200
+TARGET_UPDATE_EVERY = 500
 GRAD_CLIP_NORM = 1.0
 BATCH_SIZE = 32
 MIN_BUFFER_SIZE = 64
@@ -49,7 +52,7 @@ def encode_state(s, grid_size):
     )
 
 
-def solve_nash(Q1, Q2):
+def solve_nash(Q1, Q2, track=False):
     """
     Compute Nash equilibrium for a 4x4 bimatrix game.
     Q1[a1, a2] = P1's payoff, Q2[a1, a2] = P2's payoff
@@ -66,13 +69,13 @@ def solve_nash(Q1, Q2):
         equilibria = list(game.support_enumeration())
         if equilibria:
             pi1, pi2 = equilibria[0]
-            return pi1, pi2
+            return pi1, pi2, False  # False = no fallback
     except:
         pass
     
     # Fallback to uniform
     uniform = np.ones(4) / 4
-    return uniform, uniform
+    return uniform, uniform, True  # True = used fallback
 
 
 def fast_nash_value(Q1, Q2):
@@ -178,6 +181,8 @@ def neural_planning(env, iterations=8000):
     target_net2.load_state_dict(net2.state_dict())
     optimizer1 = optim.Adam(net1.parameters(), lr=LR)
     optimizer2 = optim.Adam(net2.parameters(), lr=LR)
+    scheduler1 = optim.lr_scheduler.StepLR(optimizer1, step_size=500, gamma=0.5)
+    scheduler2 = optim.lr_scheduler.StepLR(optimizer2, step_size=500, gamma=0.5)
     loss_fn = nn.SmoothL1Loss()
     replay_buffer1 = ReplayBuffer(capacity=10000)
     replay_buffer2 = ReplayBuffer(capacity=10000)
@@ -263,12 +268,16 @@ def neural_planning(env, iterations=8000):
             losses1.append(loss1.item())
             losses2.append(loss2.item())
 
+            # Decay learning rate (after optimizer.step)
+            scheduler1.step()
+            scheduler2.step()
+
             if (i + 1) % TARGET_UPDATE_EVERY == 0:
                 target_net1.load_state_dict(net1.state_dict())
                 target_net2.load_state_dict(net2.state_dict())
 
         if i % 1000 == 0 and losses1:
-            print(f"Step {i} | P1 Loss: {losses1[-1]:.6f} | P2 Loss: {losses2[-1]:.6f}")
+            print(f"Step {i} | P1 Loss: {losses1[-1]:.6f} | P2 Loss: {losses2[-1]:.6f} | LR: {scheduler1.get_last_lr()[0]:.6f}")
 
     return (net1, net2), (losses1, losses2)
 
@@ -315,17 +324,21 @@ class CarGame:
 def get_policy(nets, env):
     net1, net2 = nets
     policy = {}
+    fallback_count = 0
     for s in env.states:
         s_t = encode_state(s, env.grid_size)
         with torch.no_grad():
             q1 = net1(s_t).view(4, 4)
             q2 = net2(s_t).view(4, 4)
         # Compute Nash equilibrium
-        pi1, pi2 = solve_nash(q1, q2)
+        pi1, pi2, used_fallback = solve_nash(q1, q2)
+        if used_fallback:
+            fallback_count += 1
         # Pick highest probability action (deterministic from mixed)
         a1 = int(np.argmax(pi1))
         a2 = int(np.argmax(pi2))
         policy[s] = (lambda a=a1: a, lambda a=a2: a)
+    print(f"Nash fallback used: {fallback_count}/{len(env.states)} states ({100*fallback_count/len(env.states):.1f}%)")
     return policy
 
 def rollout(env, s0, policy, T=20):
