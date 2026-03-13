@@ -25,10 +25,10 @@ warnings.filterwarnings("ignore", message=".*equilibria was returned.*")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Hyperparameters
-LR = 1e-3
+LR = 5e-4
 STEP_SIZE = 0.1  # Movement step in [0,1] space
-GAMMA = 0.8
-TAU = 0.005  # Polyak averaging coefficient for soft target updates
+GAMMA = 0.5
+TAU = 0.001  # Polyak averaging coefficient for soft target updates
 GRAD_CLIP_NORM = 1.0
 BATCH_SIZE = 32
 MIN_BUFFER_SIZE = 64
@@ -39,26 +39,19 @@ HORIZON = 10  # Fixed episode length
 HOUSE1 = (0.25, 0.25)
 HOUSE2 = (0.75, 0.75)
 
-# 9 Actions: Stay + 8 cardinal directions
-# Directions as (dx, dy) unit vectors scaled by STEP_SIZE
-ACTION_DIRS = {
-    0: (0, 0),      # Stay
-    1: (0, 1),      # N
-    2: (1, 1),      # NE (normalized)
-    3: (1, 0),      # E
-    4: (1, -1),     # SE
-    5: (0, -1),     # S
-    6: (-1, -1),    # SW
-    7: (-1, 0),     # W
-    8: (-1, 1),     # NW
-}
-# Normalize diagonal movements
-SQRT2_INV = 1.0 / np.sqrt(2)
-for a in [2, 4, 6, 8]:
-    ACTION_DIRS[a] = (ACTION_DIRS[a][0] * SQRT2_INV, ACTION_DIRS[a][1] * SQRT2_INV)
+# 17 Actions: Stay + 16 directions (every 22.5 degrees)
+# All directions are unit vectors (same step distance)
+# Angles: 0° = East, counterclockwise
+_angles_deg = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 
+               180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5]
+ACTION_DIRS = {0: (0, 0)}  # Stay
+for i, deg in enumerate(_angles_deg):
+    rad = np.radians(deg)
+    ACTION_DIRS[i + 1] = (np.cos(rad), np.sin(rad))
 
-ACTION_NAMES = ['Stay', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-NUM_ACTIONS = 9
+ACTION_NAMES = ['Stay', 'E', 'ENE', 'NE', 'NNE', 'N', 'NNW', 'NW', 'WNW',
+                'W', 'WSW', 'SW', 'SSW', 'S', 'SSE', 'SE', 'ESE']
+NUM_ACTIONS = 17
 
 
 def encode_state(s):
@@ -121,14 +114,14 @@ def fast_nash_value(Q1, Q2):
 
 class DQN(nn.Module):
     """Neural Network that approximates Q(s, a1, a2)."""
-    def __init__(self, state_dim=4, action_dim=81):  # 9x9 = 81 joint actions
+    def __init__(self, state_dim=4, action_dim=289):  # 17x17 = 289 joint actions
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(state_dim, 64),
+            nn.Linear(state_dim, 256),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(64, action_dim)
+            nn.Linear(256, action_dim)
         )
 
     def forward(self, s):
@@ -177,10 +170,10 @@ def export_weights(net, filepath, player_info=""):
         
         f.write("-----\n")
         f.write("# Metadata\n")
-        f.write(f"# Architecture: 4 -> 64 -> 64 -> 81\n")
+        f.write(f"# Architecture: 4 -> 256 -> 256 -> 289\n")
         f.write(f"# Activation: ReLU (after layers 0 and 1)\n")
-        f.write(f"# Output: 81 Q-values for joint actions (a1*9 + a2)\n")
-        f.write(f"# Actions: 0=Stay, 1=N, 2=NE, 3=E, 4=SE, 5=S, 6=SW, 7=W, 8=NW\n")
+        f.write(f"# Output: 289 Q-values for joint actions (a1*17 + a2)\n")
+        f.write(f"# Actions: 0=Stay, 1=E, 2=ENE, 3=NE, 4=NNE, 5=N, 6=NNW, 7=NW, 8=WNW, 9=W, 10=WSW, 11=SW, 12=SSW, 13=S, 14=SSE, 15=SE, 16=ESE\n")
         if player_info:
             f.write(f"# {player_info}\n")
     
@@ -227,9 +220,23 @@ class DogGame:
         return r1, r2
     
     def sample_state(self):
-        """Sample a random state (random player positions)."""
-        return (random.random(), random.random(), 
-                random.random(), random.random())
+        """
+        Sample a random state with bias toward corners/boundaries.
+        50% uniform random, 50% near boundaries.
+        """
+        if random.random() < 0.5:
+            # Uniform random
+            return (random.random(), random.random(), 
+                    random.random(), random.random())
+        else:
+            # Bias toward corners: use beta distribution that favors 0 and 1
+            def biased_coord():
+                if random.random() < 0.5:
+                    return random.betavariate(0.3, 2)  # Biased toward 0
+                else:
+                    return random.betavariate(2, 0.3)  # Biased toward 1
+            return (biased_coord(), biased_coord(),
+                    biased_coord(), biased_coord())
 
 
 def neural_planning(env, iterations=8000):
@@ -242,6 +249,9 @@ def neural_planning(env, iterations=8000):
     target_net2.load_state_dict(net2.state_dict())
     optimizer1 = optim.Adam(net1.parameters(), lr=LR)
     optimizer2 = optim.Adam(net2.parameters(), lr=LR)
+    # Gentle exponential decay: LR *= 0.9999 each step
+    scheduler1 = optim.lr_scheduler.ExponentialLR(optimizer1, gamma=0.9999)
+    scheduler2 = optim.lr_scheduler.ExponentialLR(optimizer2, gamma=0.9999)
     loss_fn = nn.SmoothL1Loss()
     replay_buffer1 = ReplayBuffer(capacity=10000)
     replay_buffer2 = ReplayBuffer(capacity=10000)
@@ -249,7 +259,7 @@ def neural_planning(env, iterations=8000):
     losses1 = []
     losses2 = []
     
-    num_joint_actions = NUM_ACTIONS * NUM_ACTIONS  # 81
+    num_joint_actions = NUM_ACTIONS * NUM_ACTIONS  # 289
 
     print("Starting Neural Planning (Nash-Q for Dog Game)...")
     for i in range(iterations):
@@ -321,9 +331,13 @@ def neural_planning(env, iterations=8000):
                 target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
             for target_param, param in zip(target_net2.parameters(), net2.parameters()):
                 target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
+            
+            # Gentle LR decay
+            scheduler1.step()
+            scheduler2.step()
 
         if i % 1000 == 0 and losses1:
-            print(f"Step {i} | P1 Loss: {losses1[-1]:.6f} | P2 Loss: {losses2[-1]:.6f}")
+            print(f"Step {i} | P1 Loss: {losses1[-1]:.6f} | P2 Loss: {losses2[-1]:.6f} | LR: {scheduler1.get_last_lr()[0]:.6f}")
 
     return (net1, net2), (losses1, losses2)
 
@@ -426,6 +440,77 @@ def draw_trajectory(ax, traj, title=""):
     ax.plot(start[2], start[3], 'x', color='darkblue', markersize=8)
 
 
+def draw_vector_field(nets, env, grid_res=15):
+    """
+    Draw vector fields showing each player's policy direction.
+    For player 1: fix player 2 at (1,1) corner
+    For player 2: fix player 1 at (0,0) corner
+    """
+    net1, net2 = nets
+    
+    # Create grid
+    xs = np.linspace(0.05, 0.95, grid_res)
+    ys = np.linspace(0.05, 0.95, grid_res)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    for player_idx, ax in enumerate(axes):
+        U = np.zeros((grid_res, grid_res))
+        V = np.zeros((grid_res, grid_res))
+        
+        for i, x in enumerate(xs):
+            for j, y in enumerate(ys):
+                if player_idx == 0:
+                    # Player 1's field: fix P2 at (1, 1)
+                    s = (x, y, 1.0, 1.0)
+                else:
+                    # Player 2's field: fix P1 at (0, 0)
+                    s = (0.0, 0.0, x, y)
+                
+                s_t = encode_state(s)
+                with torch.no_grad():
+                    q1 = net1(s_t).view(NUM_ACTIONS, NUM_ACTIONS)
+                    q2 = net2(s_t).view(NUM_ACTIONS, NUM_ACTIONS)
+                
+                # Get action via iterated best response
+                a1 = q1.max(dim=1).values.argmax().item()
+                a2 = q2.max(dim=0).values.argmax().item()
+                for _ in range(5):
+                    a1_new = q1[:, a2].argmax().item()
+                    a2_new = q2[a1, :].argmax().item()
+                    if a1_new == a1 and a2_new == a2:
+                        break
+                    a1, a2 = a1_new, a2_new
+                
+                # Get direction for this player's action
+                action = a1 if player_idx == 0 else a2
+                dx, dy = ACTION_DIRS[action]
+                U[j, i] = dx
+                V[j, i] = dy
+        
+        X, Y = np.meshgrid(xs, ys)
+        
+        color = 'red' if player_idx == 0 else 'blue'
+        ax.quiver(X, Y, U, V, color=color, alpha=0.7, scale=20)
+        
+        # Draw houses
+        ax.plot(*HOUSE1, 's', color='red', markersize=12, alpha=0.7)
+        ax.plot(*HOUSE2, 's', color='blue', markersize=12, alpha=0.7)
+        ax.plot([0, 1, 1, 0, 0], [0, 0, 1, 1, 0], 'k-', linewidth=2)
+        
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_aspect('equal')
+        
+        opponent_pos = "(1,1)" if player_idx == 0 else "(0,0)"
+        ax.set_title(f"Player {player_idx + 1} Policy (opponent at {opponent_pos})")
+    
+    plt.tight_layout()
+    plt.savefig("vector_fields.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print("Saved vector_fields.png")
+
+
 def parse_position(s):
     """Parse 'x,y' string into (float, float) tuple."""
     x, y = s.split(',')
@@ -456,6 +541,9 @@ if __name__ == "__main__":
     # Export weights
     export_weights(net1, "weights_player1.txt", "Player 1 Q-network (Dog Game)")
     export_weights(net2, "weights_player2.txt", "Player 2 Q-network (Dog Game)")
+    
+    # Draw vector fields
+    draw_vector_field(nets, env)
     
     # Plot loss
     plt.figure()
