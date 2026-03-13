@@ -147,9 +147,11 @@ class ReplayBuffer:
 
 
 def export_weights(net, filepath, player_info=""):
-    """Export network weights in standard format."""
+    """Export network weights with all comments at end."""
     with open(filepath, 'w') as f:
         layer_idx = 0
+        layer_info = []
+        
         for name, module in net.net.named_children():
             if isinstance(module, nn.Linear):
                 W = module.weight.data.cpu().numpy().T
@@ -158,18 +160,23 @@ def export_weights(net, filepath, player_info=""):
                 if layer_idx > 0:
                     f.write("-----\n")
                 
-                f.write(f"# Layer {layer_idx}: Linear({W.shape[0]} -> {W.shape[1]})\n")
-                f.write("# Weight matrix W (W_ij = weight from unit i to unit j):\n")
+                # Write weight matrix
                 for row in W:
                     f.write(",".join(f"{v:.6f}" for v in row) + "\n")
                 
-                f.write("# Bias vector:\n")
+                f.write("---\n")  # Separator between weights and bias
+                
+                # Write bias vector
                 f.write(",".join(f"{v:.6f}" for v in b) + "\n")
                 
+                layer_info.append(f"# Layer {layer_idx}: Linear({W.shape[0]} -> {W.shape[1]})")
                 layer_idx += 1
         
-        f.write("-----\n")
-        f.write("# Metadata\n")
+        # All comments at end
+        f.write("=====\n")
+        for info in layer_info:
+            f.write(info + "\n")
+        f.write("# Format: weight matrix rows, ---, bias vector, ----- between layers\n")
         f.write(f"# Architecture: 4 -> 256 -> 256 -> 289\n")
         f.write(f"# Activation: ReLU (after layers 0 and 1)\n")
         f.write(f"# Output: 289 Q-values for joint actions (a1*17 + a2)\n")
@@ -249,9 +256,15 @@ def neural_planning(env, iterations=8000):
     target_net2.load_state_dict(net2.state_dict())
     optimizer1 = optim.Adam(net1.parameters(), lr=LR)
     optimizer2 = optim.Adam(net2.parameters(), lr=LR)
-    # Gentle exponential decay: LR *= 0.9999 each step
-    scheduler1 = optim.lr_scheduler.ExponentialLR(optimizer1, gamma=0.9999)
-    scheduler2 = optim.lr_scheduler.ExponentialLR(optimizer2, gamma=0.9999)
+    # Warmup + decay: linear warmup for 200 steps, then exponential decay
+    warmup_steps = 200
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps  # Linear warmup from 0 to 1
+        else:
+            return 0.9999 ** (step - warmup_steps)  # Exponential decay after
+    scheduler1 = optim.lr_scheduler.LambdaLR(optimizer1, lr_lambda)
+    scheduler2 = optim.lr_scheduler.LambdaLR(optimizer2, lr_lambda)
     loss_fn = nn.SmoothL1Loss()
     replay_buffer1 = ReplayBuffer(capacity=10000)
     replay_buffer2 = ReplayBuffer(capacity=10000)
