@@ -28,11 +28,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LR = 5e-4
 STEP_SIZE = 0.1  # Movement step in [0,1] space
 GAMMA = 0.5
-TAU = 0.001  # Polyak averaging coefficient for soft target updates
+TAU = 0.005  # Polyak averaging coefficient for soft target updates
 GRAD_CLIP_NORM = 1.0
-BATCH_SIZE = 32
-MIN_BUFFER_SIZE = 64
-GRADIENT_STEPS = 4
+BATCH_SIZE = 64
+MIN_BUFFER_SIZE = 256
+GRADIENT_STEPS = 1
+UPDATE_EVERY = 4  # Train every N environment steps
 HORIZON = 10  # Fixed episode length
 
 # House positions
@@ -144,6 +145,29 @@ class ReplayBuffer:
         return len(self.buffer)
 
 
+class TransitionReplayBuffer:
+    """Buffer for storing transitions (s, a1, a2, r1, r2, s', done)."""
+    def __init__(self, capacity=50000):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, s, a1, a2, r1, r2, s_next, done):
+        self.buffer.append((s, a1, a2, r1, r2, s_next, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+        states = torch.stack([encode_state(x[0]) for x in batch])
+        actions1 = torch.tensor([x[1] for x in batch], dtype=torch.long, device=device)
+        actions2 = torch.tensor([x[2] for x in batch], dtype=torch.long, device=device)
+        rewards1 = torch.tensor([x[3] for x in batch], dtype=torch.float32, device=device)
+        rewards2 = torch.tensor([x[4] for x in batch], dtype=torch.float32, device=device)
+        next_states = torch.stack([encode_state(x[5]) for x in batch])
+        dones = torch.tensor([x[6] for x in batch], dtype=torch.float32, device=device)
+        return states, actions1, actions2, rewards1, rewards2, next_states, dones
+
+    def __len__(self):
+        return len(self.buffer)
+
+
 def export_weights(net, filepath, player_info=""):
     """Export network weights with bias as last entry in each row.
     
@@ -239,6 +263,159 @@ class DogGame:
                     return random.betavariate(2, 0.3)  # Biased toward 1
             return (biased_coord(), biased_coord(),
                     biased_coord(), biased_coord())
+
+    def reset(self):
+        """Reset to a random initial state for episode-based training."""
+        return self.sample_state()
+
+
+def compute_nash_actions(net1, net2, s):
+    """Compute greedy actions for state s (fast approximation)."""
+    s_t = encode_state(s)
+    with torch.no_grad():
+        q1 = net1(s_t).view(NUM_ACTIONS, NUM_ACTIONS)
+        q2 = net2(s_t).view(NUM_ACTIONS, NUM_ACTIONS)
+    
+    # Simple greedy: each player picks their best action assuming opponent plays uniformly
+    a1 = q1.sum(dim=1).argmax().item()  # Best action averaged over opponent actions
+    a2 = q2.sum(dim=0).argmax().item()
+    return a1, a2
+
+
+def train_nash_q_epsilon_greedy(env, num_episodes=2000, max_steps=None,
+                                  epsilon_start=1.0, epsilon_end=0.05, epsilon_decay=0.997):
+    """
+    Train Nash-Q networks using epsilon-greedy trajectory rollouts.
+    
+    Instead of sampling random states, we run episodes and learn from transitions.
+    """
+    if max_steps is None:
+        max_steps = HORIZON
+    
+    net1 = DQN().to(device)
+    net2 = DQN().to(device)
+    target_net1 = DQN().to(device)
+    target_net2 = DQN().to(device)
+    target_net1.load_state_dict(net1.state_dict())
+    target_net2.load_state_dict(net2.state_dict())
+    
+    optimizer1 = optim.Adam(net1.parameters(), lr=LR)
+    optimizer2 = optim.Adam(net2.parameters(), lr=LR)
+    
+    # Warmup + decay learning rate
+    warmup_steps = 200
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        else:
+            return 0.9999 ** (step - warmup_steps)
+    scheduler1 = optim.lr_scheduler.LambdaLR(optimizer1, lr_lambda)
+    scheduler2 = optim.lr_scheduler.LambdaLR(optimizer2, lr_lambda)
+    
+    loss_fn = nn.SmoothL1Loss()
+    replay_buffer = TransitionReplayBuffer(capacity=50000)
+    
+    losses1 = []
+    losses2 = []
+    epsilon = epsilon_start
+    total_steps = 0
+    
+    print(f"Starting Epsilon-Greedy Nash-Q Training...")
+    print(f"  Episodes: {num_episodes}, Max steps/episode: {max_steps}")
+    print(f"  Epsilon: {epsilon_start} -> {epsilon_end} (decay={epsilon_decay})")
+    
+    for episode in range(num_episodes):
+        s = env.reset()
+        episode_reward1 = 0
+        episode_reward2 = 0
+        
+        for t in range(max_steps):
+            # Epsilon-greedy action selection
+            if random.random() < epsilon:
+                a1 = random.randint(0, NUM_ACTIONS - 1)
+                a2 = random.randint(0, NUM_ACTIONS - 1)
+            else:
+                a1, a2 = compute_nash_actions(net1, net2, s)
+            
+            # Environment step
+            s_next = env.transition(s, a1, a2)
+            r1, r2 = env.reward(s, a1, a2)
+            done = (t == max_steps - 1)
+            
+            # Store transition
+            replay_buffer.push(s, a1, a2, r1, r2, s_next, done)
+            
+            episode_reward1 += r1
+            episode_reward2 += r2
+            total_steps += 1
+            
+            # Train from replay buffer (every UPDATE_EVERY steps)
+            if len(replay_buffer) >= MIN_BUFFER_SIZE and total_steps % UPDATE_EVERY == 0:
+                for _ in range(GRADIENT_STEPS):
+                    batch = replay_buffer.sample(BATCH_SIZE)
+                    states, actions1, actions2, rewards1, rewards2, next_states, dones = batch
+                    
+                    # Compute target Q-values using greedy approximation (fast, vectorized)
+                    with torch.no_grad():
+                        q1_next = target_net1(next_states).view(-1, NUM_ACTIONS, NUM_ACTIONS)
+                        q2_next = target_net2(next_states).view(-1, NUM_ACTIONS, NUM_ACTIONS)
+                        
+                        # Greedy value approximation: max over all joint actions
+                        # This is faster than computing Nash equilibrium
+                        v1_next = q1_next.view(-1, NUM_ACTIONS * NUM_ACTIONS).max(dim=1).values
+                        v2_next = q2_next.view(-1, NUM_ACTIONS * NUM_ACTIONS).max(dim=1).values
+                        
+                        # Target = r + gamma * V(s') * (1 - done)
+                        target_q1 = rewards1 + GAMMA * v1_next * (1 - dones)
+                        target_q2 = rewards2 + GAMMA * v2_next * (1 - dones)
+                    
+                    # Compute current Q-values for the taken actions
+                    q1_pred = net1(states).view(-1, NUM_ACTIONS, NUM_ACTIONS)
+                    q2_pred = net2(states).view(-1, NUM_ACTIONS, NUM_ACTIONS)
+                    
+                    # Index into Q(s, a1, a2) for the actions taken
+                    q1_values = q1_pred[torch.arange(len(states)), actions1, actions2]
+                    q2_values = q2_pred[torch.arange(len(states)), actions1, actions2]
+                    
+                    # Compute losses
+                    loss1 = loss_fn(q1_values, target_q1)
+                    loss2 = loss_fn(q2_values, target_q2)
+                    
+                    optimizer1.zero_grad()
+                    loss1.backward()
+                    torch.nn.utils.clip_grad_norm_(net1.parameters(), GRAD_CLIP_NORM)
+                    optimizer1.step()
+                    
+                    optimizer2.zero_grad()
+                    loss2.backward()
+                    torch.nn.utils.clip_grad_norm_(net2.parameters(), GRAD_CLIP_NORM)
+                    optimizer2.step()
+                
+                losses1.append(loss1.item())
+                losses2.append(loss2.item())
+                
+                # Soft target update
+                for target_param, param in zip(target_net1.parameters(), net1.parameters()):
+                    target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
+                for target_param, param in zip(target_net2.parameters(), net2.parameters()):
+                    target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
+                
+                scheduler1.step()
+                scheduler2.step()
+            
+            s = s_next
+        
+        # Decay epsilon
+        epsilon = max(epsilon_end, epsilon * epsilon_decay)
+        
+        if episode % 100 == 0:
+            avg_loss1 = np.mean(losses1[-100:]) if losses1 else 0
+            avg_loss2 = np.mean(losses2[-100:]) if losses2 else 0
+            print(f"Episode {episode} | Epsilon: {epsilon:.3f} | "
+                  f"P1 Loss: {avg_loss1:.6f} | P2 Loss: {avg_loss2:.6f} | "
+                  f"Buffer: {len(replay_buffer)}")
+    
+    return (net1, net2), (losses1, losses2)
 
 
 def neural_planning(env, iterations=8000):
@@ -527,11 +704,16 @@ def parse_position(s):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Dog Game (Nash-Q)")
-    parser.add_argument("--iterations", type=int, default=8000, help="Training iterations")
+    parser.add_argument("--iterations", type=int, default=8000, help="Training iterations (for planning mode)")
+    parser.add_argument("--episodes", type=int, default=2000, help="Training episodes (for epsilon-greedy mode)")
     parser.add_argument("--step-size", type=float, default=0.1, help="Movement step size")
     parser.add_argument("--horizon", type=int, default=10, help="Episode length")
     parser.add_argument("--house1", type=str, default="0.25,0.25", help="House 1 position (x,y)")
     parser.add_argument("--house2", type=str, default="0.75,0.75", help="House 2 position (x,y)")
+    parser.add_argument("--epsilon-greedy", action="store_true", help="Use epsilon-greedy trajectory training")
+    parser.add_argument("--epsilon-start", type=float, default=1.0, help="Initial epsilon")
+    parser.add_argument("--epsilon-end", type=float, default=0.05, help="Final epsilon")
+    parser.add_argument("--epsilon-decay", type=float, default=0.997, help="Epsilon decay per episode")
     args = parser.parse_args()
     
     HORIZON = args.horizon
@@ -541,7 +723,17 @@ if __name__ == "__main__":
     env = DogGame(step_size=args.step_size, house1=HOUSE1, house2=HOUSE2)
     
     # Train
-    nets, losses = neural_planning(env, iterations=args.iterations)
+    if args.epsilon_greedy:
+        nets, losses = train_nash_q_epsilon_greedy(
+            env, 
+            num_episodes=args.episodes,
+            max_steps=args.horizon,
+            epsilon_start=args.epsilon_start,
+            epsilon_end=args.epsilon_end,
+            epsilon_decay=args.epsilon_decay
+        )
+    else:
+        nets, losses = neural_planning(env, iterations=args.iterations)
     net1, net2 = nets
     losses1, losses2 = losses
     policy_fn = get_policy(nets, env)
