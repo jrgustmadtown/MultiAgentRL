@@ -39,12 +39,12 @@ HORIZON = 10  # Fixed episode length
 HOUSE1 = (0.25, 0.25)
 HOUSE2 = (0.75, 0.75)
 
-# 17 Actions: Stay + 16 directions (every 22.5 degrees)
-# All directions are unit vectors (same step distance)
-# Angles: 0° = East, counterclockwise
+# 17 actions, stay + 16 directions - every 22.5 degrees
+# unit vectors
+# 0° = East - counterclockwise
 _angles_deg = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 
                180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5]
-ACTION_DIRS = {0: (0, 0)}  # Stay
+ACTION_DIRS = {0: (0, 0)} 
 for i, deg in enumerate(_angles_deg):
     rad = np.radians(deg)
     ACTION_DIRS[i + 1] = (np.cos(rad), np.sin(rad))
@@ -74,9 +74,8 @@ def distance(p1, p2):
 
 def solve_nash(Q1, Q2, track=False):
     """
-    Compute Nash equilibrium for a 9x9 bimatrix game.
     Returns (pi1, pi2) mixed strategies as numpy arrays.
-    Falls back to uniform if no equilibrium found.
+    falls back to uniform if no equilibrium found.
     """
     Q1_np = Q1.cpu().numpy() if isinstance(Q1, torch.Tensor) else Q1
     Q2_np = Q2.cpu().numpy() if isinstance(Q2, torch.Tensor) else Q2
@@ -111,9 +110,8 @@ def fast_nash_value(Q1, Q2):
         a1, a2 = a1_new, a2_new
     return Q1[a1, a2], Q2[a1, a2]
 
-
+"""Neural Network that approximates Q(s, a1, a2)."""
 class DQN(nn.Module):
-    """Neural Network that approximates Q(s, a1, a2)."""
     def __init__(self, state_dim=4, action_dim=289):  # 17x17 = 289 joint actions
         super().__init__()
         self.net = nn.Sequential(
@@ -147,42 +145,39 @@ class ReplayBuffer:
 
 
 def export_weights(net, filepath, player_info=""):
-    """Export network weights with all comments at end."""
+    """Export network weights with bias as last entry in each row.
+    
+    Format: Each row is one output neuron with [input_weights..., bias].
+    Layers separated by '-----'.
+    """
     with open(filepath, 'w') as f:
         layer_idx = 0
-        layer_info = []
         
         for name, module in net.net.named_children():
             if isinstance(module, nn.Linear):
-                W = module.weight.data.cpu().numpy().T
+                # W is (output_dim, input_dim), b is (output_dim,)
+                W = module.weight.data.cpu().numpy()
                 b = module.bias.data.cpu().numpy()
                 
                 if layer_idx > 0:
                     f.write("-----\n")
                 
-                # Write weight matrix
-                for row in W:
+                # Each row: one output neuron with weights + bias
+                for j in range(W.shape[0]):
+                    row = list(W[j]) + [b[j]]
                     f.write(",".join(f"{v:.6f}" for v in row) + "\n")
                 
-                f.write("---\n")  # Separator between weights and bias
-                
-                # Write bias vector
-                f.write(",".join(f"{v:.6f}" for v in b) + "\n")
-                
-                layer_info.append(f"# Layer {layer_idx}: Linear({W.shape[0]} -> {W.shape[1]})")
                 layer_idx += 1
         
         # All comments at end
         f.write("=====\n")
-        for info in layer_info:
-            f.write(info + "\n")
-        f.write("# Format: weight matrix rows, ---, bias vector, ----- between layers\n")
-        f.write(f"# Architecture: 4 -> 256 -> 256 -> 289\n")
-        f.write(f"# Activation: ReLU (after layers 0 and 1)\n")
-        f.write(f"# Output: 289 Q-values for joint actions (a1*17 + a2)\n")
-        f.write(f"# Actions: 0=Stay, 1=E, 2=ENE, 3=NE, 4=NNE, 5=N, 6=NNW, 7=NW, 8=WNW, 9=W, 10=WSW, 11=SW, 12=SSW, 13=S, 14=SSE, 15=SE, 16=ESE\n")
-        if player_info:
-            f.write(f"# {player_info}\n")
+        f.write("# Layer 0: Linear(4 -> 256) - 256 rows x 5 cols (4 weights + bias)\n")
+        f.write("# Layer 1: Linear(256 -> 256) - 256 rows x 257 cols (256 weights + bias)\n")
+        f.write("# Layer 2: Linear(256 -> 289) - 289 rows x 257 cols (256 weights + bias)\n")
+        f.write("# Format: each row is [input_weights..., bias] for one output neuron\n")
+        f.write("# Architecture: 4 -> 256 -> 256 -> 289\n")
+        f.write("# Activation: ReLU\n")
+        f.write("# Actions: 0=Stay, 1=E, 2=ENE, 3=NE, 4=NNE, 5=N, 6=NNW, 7=NW, 8=WNW, 9=W, 10=WSW, 11=SW, 12=SSW, 13=S, 14=SSE, 15=SE, 16=ESE\n")
     
     print(f"Saved weights to {filepath}")
 
