@@ -40,19 +40,37 @@ HORIZON = 10  # Fixed episode length
 HOUSE1 = (0.25, 0.25)
 HOUSE2 = (0.75, 0.75)
 
-# 17 actions, stay + 16 directions - every 22.5 degrees
-# unit vectors
-# 0° = East - counterclockwise
-_angles_deg = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 
-               180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5]
-ACTION_DIRS = {0: (0, 0)} 
-for i, deg in enumerate(_angles_deg):
-    rad = np.radians(deg)
-    ACTION_DIRS[i + 1] = (np.cos(rad), np.sin(rad))
-
-ACTION_NAMES = ['Stay', 'E', 'ENE', 'NE', 'NNE', 'N', 'NNW', 'NW', 'WNW',
-                'W', 'WSW', 'SW', 'SSW', 'S', 'SSE', 'SE', 'ESE']
+# Action configuration - can be 9 (stay + 8 cardinal/diagonal) or 17 (stay + 16 directions)
+# Default: 17 actions
 NUM_ACTIONS = 17
+ACTION_DIRS = None
+ACTION_NAMES = None
+
+def setup_actions(num_actions=17):
+    """Configure action directions based on number of actions."""
+    global NUM_ACTIONS, ACTION_DIRS, ACTION_NAMES
+    NUM_ACTIONS = num_actions
+    
+    if num_actions == 9:
+        # Stay + 8 directions (every 45°)
+        _angles_deg = [0, 45, 90, 135, 180, 225, 270, 315]
+        ACTION_NAMES = ['Stay', 'E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE']
+    elif num_actions == 17:
+        # Stay + 16 directions (every 22.5°)
+        _angles_deg = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 
+                       180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5]
+        ACTION_NAMES = ['Stay', 'E', 'ENE', 'NE', 'NNE', 'N', 'NNW', 'NW', 'WNW',
+                        'W', 'WSW', 'SW', 'SSW', 'S', 'SSE', 'SE', 'ESE']
+    else:
+        raise ValueError(f"num_actions must be 9 or 17, got {num_actions}")
+    
+    ACTION_DIRS = {0: (0, 0)}
+    for i, deg in enumerate(_angles_deg):
+        rad = np.radians(deg)
+        ACTION_DIRS[i + 1] = (np.cos(rad), np.sin(rad))
+
+# Initialize with default 17 actions
+setup_actions(17)
 
 
 def encode_state(s):
@@ -113,8 +131,10 @@ def fast_nash_value(Q1, Q2):
 
 """Neural Network that approximates Q(s, a1, a2)."""
 class DQN(nn.Module):
-    def __init__(self, state_dim=4, action_dim=289):  # 17x17 = 289 joint actions
+    def __init__(self, state_dim=4, action_dim=None):
         super().__init__()
+        if action_dim is None:
+            action_dim = NUM_ACTIONS * NUM_ACTIONS  # Joint actions
         self.net = nn.Sequential(
             nn.Linear(state_dim, 256),
             nn.ReLU(),
@@ -125,6 +145,25 @@ class DQN(nn.Module):
 
     def forward(self, s):
         return self.net(s)
+
+
+class PolicyNetwork(nn.Module):
+    """Policy network for REINFORCE - outputs action probabilities."""
+    def __init__(self, state_dim=4, action_dim=None):
+        super().__init__()
+        if action_dim is None:
+            action_dim = NUM_ACTIONS
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_dim)
+        )
+
+    def forward(self, s):
+        logits = self.net(s)
+        return torch.softmax(logits, dim=-1)
 
 
 class ReplayBuffer:
@@ -194,14 +233,16 @@ def export_weights(net, filepath, player_info=""):
                 layer_idx += 1
         
         # All comments at end
+        joint_actions = NUM_ACTIONS * NUM_ACTIONS
         f.write("=====\n")
         f.write("# Layer 0: Linear(4 -> 256) - 256 rows x 5 cols (4 weights + bias)\n")
         f.write("# Layer 1: Linear(256 -> 256) - 256 rows x 257 cols (256 weights + bias)\n")
-        f.write("# Layer 2: Linear(256 -> 289) - 289 rows x 257 cols (256 weights + bias)\n")
+        f.write(f"# Layer 2: Linear(256 -> {joint_actions}) - {joint_actions} rows x 257 cols (256 weights + bias)\n")
         f.write("# Format: each row is [input_weights..., bias] for one output neuron\n")
-        f.write("# Architecture: 4 -> 256 -> 256 -> 289\n")
+        f.write(f"# Architecture: 4 -> 256 -> 256 -> {joint_actions}\n")
         f.write("# Activation: ReLU\n")
-        f.write("# Actions: 0=Stay, 1=E, 2=ENE, 3=NE, 4=NNE, 5=N, 6=NNW, 7=NW, 8=WNW, 9=W, 10=WSW, 11=SW, 12=SSW, 13=S, 14=SSE, 15=SE, 16=ESE\n")
+        action_str = ", ".join(f"{i}={ACTION_NAMES[i]}" for i in range(NUM_ACTIONS))
+        f.write(f"# Actions: {action_str}\n")
     
     print(f"Saved weights to {filepath}")
 
@@ -267,6 +308,161 @@ class DogGame:
     def reset(self):
         """Reset to a random initial state for episode-based training."""
         return self.sample_state()
+
+
+def compute_returns(rewards, gamma):
+    """Compute discounted returns from rewards (for REINFORCE)."""
+    returns = []
+    G = 0
+    for r in reversed(rewards):
+        G = r + gamma * G
+        returns.insert(0, G)
+    return returns
+
+
+def train_reinforce(env, num_episodes=5000, max_steps=None, lr=1e-3, baseline=True, gamma=0.95):
+    """
+    Train using REINFORCE (policy gradient).
+    
+    Each player has their own policy network that outputs action probabilities.
+    Uses full episode returns for policy gradient updates.
+    
+    Default gamma=0.95 (higher than Nash-Q) since policy gradients need to
+    value future rewards more to reach the goal.
+    """
+    if max_steps is None:
+        max_steps = HORIZON
+    
+    policy1 = PolicyNetwork().to(device)
+    policy2 = PolicyNetwork().to(device)
+    optimizer1 = optim.Adam(policy1.parameters(), lr=lr)
+    optimizer2 = optim.Adam(policy2.parameters(), lr=lr)
+    
+    losses1 = []
+    losses2 = []
+    avg_returns1 = []
+    avg_returns2 = []
+    
+    # Running baseline for variance reduction
+    baseline1 = 0
+    baseline2 = 0
+    baseline_decay = 0.99
+    
+    print(f"Starting REINFORCE Training...")
+    print(f"  Episodes: {num_episodes}, Max steps/episode: {max_steps}")
+    print(f"  Learning rate: {lr}, Baseline: {baseline}, Gamma: {gamma}")
+    
+    for episode in range(num_episodes):
+        # Collect episode
+        states = []
+        actions1 = []
+        actions2 = []
+        log_probs1 = []
+        log_probs2 = []
+        rewards1 = []
+        rewards2 = []
+        
+        s = env.reset()
+        
+        for t in range(max_steps):
+            s_t = encode_state(s)
+            probs1 = policy1(s_t)
+            probs2 = policy2(s_t)
+            
+            # Sample actions from policy distributions
+            dist1 = torch.distributions.Categorical(probs1)
+            dist2 = torch.distributions.Categorical(probs2)
+            a1 = dist1.sample()
+            a2 = dist2.sample()
+            
+            # Store log probabilities for gradient computation
+            log_probs1.append(dist1.log_prob(a1))
+            log_probs2.append(dist2.log_prob(a2))
+            
+            # Environment step
+            s_next = env.transition(s, a1.item(), a2.item())
+            r1, r2 = env.reward(s, a1.item(), a2.item())
+            
+            states.append(s_t)
+            actions1.append(a1.item())
+            actions2.append(a2.item())
+            rewards1.append(r1)
+            rewards2.append(r2)
+            
+            s = s_next
+        
+        # Compute returns (discounted cumulative rewards)
+        returns1 = compute_returns(rewards1, gamma)
+        returns2 = compute_returns(rewards2, gamma)
+        
+        # Convert to tensors
+        returns1_t = torch.tensor(returns1, dtype=torch.float32, device=device)
+        returns2_t = torch.tensor(returns2, dtype=torch.float32, device=device)
+        
+        # Update baselines
+        ep_return1 = returns1[0]
+        ep_return2 = returns2[0]
+        baseline1 = baseline_decay * baseline1 + (1 - baseline_decay) * ep_return1
+        baseline2 = baseline_decay * baseline2 + (1 - baseline_decay) * ep_return2
+        
+        # Compute advantages (returns - baseline)
+        if baseline:
+            advantages1 = returns1_t - baseline1
+            advantages2 = returns2_t - baseline2
+        else:
+            advantages1 = returns1_t
+            advantages2 = returns2_t
+        
+        # Normalize advantages for stability
+        if len(advantages1) > 1:
+            advantages1 = (advantages1 - advantages1.mean()) / (advantages1.std() + 1e-8)
+            advantages2 = (advantages2 - advantages2.mean()) / (advantages2.std() + 1e-8)
+        
+        # Policy gradient update
+        log_probs1_t = torch.stack(log_probs1)
+        log_probs2_t = torch.stack(log_probs2)
+        
+        loss1 = -(log_probs1_t * advantages1).mean()
+        loss2 = -(log_probs2_t * advantages2).mean()
+        
+        optimizer1.zero_grad()
+        loss1.backward()
+        torch.nn.utils.clip_grad_norm_(policy1.parameters(), GRAD_CLIP_NORM)
+        optimizer1.step()
+        
+        optimizer2.zero_grad()
+        loss2.backward()
+        torch.nn.utils.clip_grad_norm_(policy2.parameters(), GRAD_CLIP_NORM)
+        optimizer2.step()
+        
+        losses1.append(loss1.item())
+        losses2.append(loss2.item())
+        avg_returns1.append(ep_return1)
+        avg_returns2.append(ep_return2)
+        
+        if episode % 500 == 0:
+            recent_ret1 = np.mean(avg_returns1[-100:]) if avg_returns1 else 0
+            recent_ret2 = np.mean(avg_returns2[-100:]) if avg_returns2 else 0
+            print(f"Episode {episode} | P1 Return: {recent_ret1:.4f} | P2 Return: {recent_ret2:.4f}")
+    
+    return (policy1, policy2), (losses1, losses2)
+
+
+def get_policy_reinforce(nets, env):
+    """Get policy function for REINFORCE-trained networks."""
+    policy1, policy2 = nets
+    
+    def policy_fn(s):
+        s_t = encode_state(s)
+        with torch.no_grad():
+            probs1 = policy1(s_t)
+            probs2 = policy2(s_t)
+        # Use greedy action (most probable) for evaluation
+        a1 = probs1.argmax().item()
+        a2 = probs2.argmax().item()
+        return a1, a2
+    
+    return policy_fn
 
 
 def compute_nash_actions(net1, net2, s):
@@ -444,7 +640,7 @@ def neural_planning(env, iterations=8000):
     losses1 = []
     losses2 = []
     
-    num_joint_actions = NUM_ACTIONS * NUM_ACTIONS  # 289
+    num_joint_actions = NUM_ACTIONS * NUM_ACTIONS
 
     print("Starting Neural Planning (Nash-Q for Dog Game)...")
     for i in range(iterations):
@@ -703,9 +899,9 @@ def parse_position(s):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Dog Game (Nash-Q)")
+    parser = argparse.ArgumentParser(description="Dog Game (Nash-Q / REINFORCE)")
     parser.add_argument("--iterations", type=int, default=8000, help="Training iterations (for planning mode)")
-    parser.add_argument("--episodes", type=int, default=2000, help="Training episodes (for epsilon-greedy mode)")
+    parser.add_argument("--episodes", type=int, default=2000, help="Training episodes (for epsilon-greedy/reinforce mode)")
     parser.add_argument("--step-size", type=float, default=0.1, help="Movement step size")
     parser.add_argument("--horizon", type=int, default=10, help="Episode length")
     parser.add_argument("--house1", type=str, default="0.25,0.25", help="House 1 position (x,y)")
@@ -714,7 +910,15 @@ if __name__ == "__main__":
     parser.add_argument("--epsilon-start", type=float, default=1.0, help="Initial epsilon")
     parser.add_argument("--epsilon-end", type=float, default=0.05, help="Final epsilon")
     parser.add_argument("--epsilon-decay", type=float, default=0.997, help="Epsilon decay per episode")
+    parser.add_argument("--reinforce", action="store_true", help="Use REINFORCE (policy gradient) training")
+    parser.add_argument("--reinforce-lr", type=float, default=1e-3, help="Learning rate for REINFORCE")
+    parser.add_argument("--no-baseline", action="store_true", help="Disable baseline in REINFORCE")
+    parser.add_argument("--gamma", type=float, default=None, help="Discount factor (default: 0.5 for Nash-Q, 0.95 for REINFORCE)")
+    parser.add_argument("--num-actions", type=int, default=17, choices=[9, 17], help="Number of movement directions: 9 (cardinal+diagonal) or 17 (every 22.5°)")
     args = parser.parse_args()
+    
+    # Setup action space
+    setup_actions(args.num_actions)
     
     HORIZON = args.horizon
     HOUSE1 = parse_position(args.house1)
@@ -722,8 +926,29 @@ if __name__ == "__main__":
     
     env = DogGame(step_size=args.step_size, house1=HOUSE1, house2=HOUSE2)
     
+    # Track which training mode we used
+    use_reinforce = args.reinforce
+    
+    # Set gamma (default depends on algorithm)
+    if args.gamma is not None:
+        gamma = args.gamma
+    elif args.reinforce:
+        gamma = 0.95  # Higher gamma for REINFORCE to value future rewards
+    else:
+        gamma = GAMMA  # Use global default (0.5) for Nash-Q
+    
     # Train
-    if args.epsilon_greedy:
+    if args.reinforce:
+        nets, losses = train_reinforce(
+            env,
+            num_episodes=args.episodes,
+            max_steps=args.horizon,
+            lr=args.reinforce_lr,
+            baseline=not args.no_baseline,
+            gamma=gamma
+        )
+        policy_fn = get_policy_reinforce(nets, env)
+    elif args.epsilon_greedy:
         nets, losses = train_nash_q_epsilon_greedy(
             env, 
             num_episodes=args.episodes,
@@ -732,18 +957,21 @@ if __name__ == "__main__":
             epsilon_end=args.epsilon_end,
             epsilon_decay=args.epsilon_decay
         )
+        policy_fn = get_policy(nets, env)
     else:
         nets, losses = neural_planning(env, iterations=args.iterations)
+        policy_fn = get_policy(nets, env)
     net1, net2 = nets
     losses1, losses2 = losses
-    policy_fn = get_policy(nets, env)
     
-    # Export weights
-    export_weights(net1, "weights_player1.txt", "Player 1 Q-network (Dog Game)")
-    export_weights(net2, "weights_player2.txt", "Player 2 Q-network (Dog Game)")
-    
-    # Draw vector fields
-    draw_vector_field(nets, env)
+    # Export weights (only for Q-networks, not policy networks)
+    if not use_reinforce:
+        export_weights(net1, "weights_player1.txt", "Player 1 Q-network (Dog Game)")
+        export_weights(net2, "weights_player2.txt", "Player 2 Q-network (Dog Game)")
+        # Draw vector fields (only works with Q-networks)
+        draw_vector_field(nets, env)
+    else:
+        print("Note: Weight export and vector fields not available for REINFORCE (uses policy networks)")
     
     # Plot loss
     plt.figure()
@@ -751,7 +979,8 @@ if __name__ == "__main__":
     plt.plot(losses2, label="P2 Loss", alpha=0.7)
     plt.xlabel("Update Step")
     plt.ylabel("Loss")
-    plt.title("Dog Game - Nash-Q Training Loss")
+    title = "Dog Game - REINFORCE Training" if use_reinforce else "Dog Game - Nash-Q Training Loss"
+    plt.title(title)
     plt.legend()
     plt.savefig("planning_loss.png")
     plt.close()
