@@ -12,20 +12,23 @@ if REPO_ROOT not in sys.path:
 from utilities.replay import ReplayBuffer
 
 try:
-    from .config import NUM_JOINT_ACTIONS, device
+    from .config import NUM_ACTIONS, device
 except ImportError:
-    from config import NUM_JOINT_ACTIONS, device
+    from config import NUM_ACTIONS, device
 
 
-def encode_state(state):
-    return torch.tensor(state, dtype=torch.float32, device=device)
+def encode_state(s):
+    """State s = (p1_x, p1_y, p2_x, p2_y) in [0,1] space."""
+    return torch.tensor(s, dtype=torch.float32, device=device)
 
 
 class DQN(nn.Module):
-    """Joint-action Q-network Q(s, a1, a2)."""
+    """Neural network approximating Q(s, a1, a2)."""
 
-    def __init__(self, state_dim=8, action_dim=NUM_JOINT_ACTIONS):
+    def __init__(self, state_dim=4, action_dim=None):
         super().__init__()
+        if action_dim is None:
+            action_dim = NUM_ACTIONS * NUM_ACTIONS
         self.net = nn.Sequential(
             nn.Linear(state_dim, 256),
             nn.ReLU(),

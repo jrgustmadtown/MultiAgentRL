@@ -5,44 +5,27 @@ warnings_filter_message = ".*equilibria was returned.*"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Training and environment defaults
+# Hyperparameters
 LR = 5e-4
+STEP_SIZE = 0.1
 GAMMA = 0.9
 TAU = 0.001
 GRAD_CLIP_NORM = 1.0
 BATCH_SIZE = 32
 MIN_BUFFER_SIZE = 64
 GRADIENT_STEPS = 4
-TARGET_UPDATE_EVERY = 200
-
+DEFAULT_HORIZON = 20
 DEFAULT_ITERATIONS = 8000
-DEFAULT_HORIZON = 30
-STEP_SIZE = 0.10
-PUSH_SCALE = 1.0
+
+# Single cooperative house target
+DEFAULT_HOUSE = (0.75, 0.75)
 SUCCESS_RADIUS = 0.05
+SUCCESS_BONUS = 3.0
 
-# Reward shaping
-ALPHA_GLOBAL = 1.0
-BETA_AXIS = 0.5
-STEP_PENALTY = -0.01
-SUCCESS_BONUS = 5.0
+# Single wall segment from bottom edge up toward the goal area.
+DEFAULT_WALL = ((0.5, 0.0), (0.5, 0.75))
 
-# Radii
-BOULDER_RADIUS = 0.04
-PLAYER_RADIUS = 0.03
-HOLE_RADIUS = 0.05
-
-# Default spawn positions
-DEFAULT_P1_START = (0.10, 0.20)
-DEFAULT_P2_START = (0.30, 0.20)
-DEFAULT_BOULDER_START = (0.20, 0.40)
-DEFAULT_HOLE = (0.80, 0.40)
-
-# World bounds
-WORLD_MIN = 0.0
-WORLD_MAX = 1.0
-
-# 17 actions: stay + 16 directions
+# 17 actions, stay + 16 directions (22.5 degree spacing)
 _angles_deg = [
     0,
     22.5,
@@ -87,9 +70,3 @@ ACTION_NAMES = [
 ]
 NUM_ACTIONS = len(ACTION_NAMES)
 NUM_JOINT_ACTIONS = NUM_ACTIONS * NUM_ACTIONS
-
-# Simple maze preset: list of axis-aligned rectangles (x_min, y_min, x_max, y_max)
-# Step 3 will finalize and validate wall collision behavior.
-DEFAULT_WALLS = [
-    (0.45, 0.00, 0.55, 0.60),
-]
