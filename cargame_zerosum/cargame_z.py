@@ -14,6 +14,12 @@ import os
 from collections import deque
 import matplotlib.pyplot as plt
 
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def output_path(filename):
+    return os.path.join(OUTPUT_DIR, filename)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 LR = 1e-3
@@ -325,8 +331,8 @@ if __name__ == "__main__":
     policy = get_policy(net, env)
 
     # Export weights for both players
-    export_weights(net, "weights_player1.txt", "Player 1 (maximizer): argmax over a1 of min over a2")
-    export_weights(net, "weights_player2.txt", "Player 2 (minimizer): opponent uses argmin over a2 given P1's a1")
+    export_weights(net, output_path("weights_player1.txt"), "Player 1 (maximizer): argmax over a1 of min over a2")
+    export_weights(net, output_path("weights_player2.txt"), "Player 2 (minimizer): opponent uses argmin over a2 given P1's a1")
 
     # Filter to non-crash states (players not at same position)
     valid_states = [s for s in env.states if (s[0], s[1]) != (s[2], s[3])]
@@ -404,7 +410,7 @@ if __name__ == "__main__":
         for i, s0 in enumerate(sample_states):
             idx[0] = valid_states.index(s0)
             update_plot()
-            rollout_path = f"rollout_{i+1}.png"
+            rollout_path = output_path(f"rollout_{i+1}.png")
             fig.savefig(rollout_path, dpi=150, bbox_inches="tight")
             print(f"  Saved {rollout_path} from {s0}")
 
@@ -417,7 +423,7 @@ if __name__ == "__main__":
     if not is_headless:
         plt.show()
     else:
-        loss_path = "planning_loss.png"
+        loss_path = output_path("planning_loss.png")
         plt.savefig(loss_path, dpi=150, bbox_inches="tight")
         print(f"Saved {loss_path}")
 

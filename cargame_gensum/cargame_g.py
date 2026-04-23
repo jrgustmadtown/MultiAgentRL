@@ -16,6 +16,12 @@ import os
 from collections import deque
 import matplotlib.pyplot as plt
 
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def output_path(filename):
+    return os.path.join(OUTPUT_DIR, filename)
+
 warnings.filterwarnings("ignore", message=".*equilibria was returned.*")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -418,8 +424,8 @@ if __name__ == "__main__":
     policy = get_policy(nets, env)
 
     # Export weights for both players
-    export_weights(net1, "weights_player1.txt", "Player 1 Q-network (Nash-Q)")
-    export_weights(net2, "weights_player2.txt", "Player 2 Q-network (Nash-Q)")
+    export_weights(net1, output_path("weights_player1.txt"), "Player 1 Q-network (Nash-Q)")
+    export_weights(net2, output_path("weights_player2.txt"), "Player 2 Q-network (Nash-Q)")
 
     # Plot loss curves
     plt.figure()
@@ -429,9 +435,10 @@ if __name__ == "__main__":
     plt.ylabel("Loss")
     plt.title("Nash-Q Training Loss")
     plt.legend()
-    plt.savefig("planning_loss.png")
+    loss_path = output_path("planning_loss.png")
+    plt.savefig(loss_path)
     plt.close()
-    print("Saved planning_loss.png")
+    print(f"Saved {loss_path}")
 
     # Filter to non-crash states (players not at same position)
     valid_states = [s for s in env.states if (s[0], s[1]) != (s[2], s[3])]
@@ -509,7 +516,7 @@ if __name__ == "__main__":
         for i, s0 in enumerate(sample_states):
             idx[0] = valid_states.index(s0)
             update_plot()
-            rollout_path = f"rollout_{i+1}.png"
+            rollout_path = output_path(f"rollout_{i+1}.png")
             fig.savefig(rollout_path, dpi=150, bbox_inches="tight")
             print(f"  Saved {rollout_path} from {s0}")
 

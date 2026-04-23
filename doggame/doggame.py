@@ -20,6 +20,12 @@ import os
 from collections import deque
 import matplotlib.pyplot as plt
 
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def output_path(filename):
+    return os.path.join(OUTPUT_DIR, filename)
+
 warnings.filterwarnings("ignore", message=".*equilibria was returned.*")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -514,9 +520,10 @@ def draw_vector_field(nets, env, grid_res=15):
         ax.set_title(f"Player {player_idx + 1} Policy (opponent at {opponent_pos})")
     
     plt.tight_layout()
-    plt.savefig("vector_fields.png", dpi=150, bbox_inches="tight")
+    vector_path = output_path("vector_fields.png")
+    plt.savefig(vector_path, dpi=150, bbox_inches="tight")
     plt.close()
-    print("Saved vector_fields.png")
+    print(f"Saved {vector_path}")
 
 
 def parse_position(s):
@@ -547,8 +554,8 @@ if __name__ == "__main__":
     policy_fn = get_policy(nets, env)
     
     # Export weights
-    export_weights(net1, "weights_player1.txt", "Player 1 Q-network (Dog Game)")
-    export_weights(net2, "weights_player2.txt", "Player 2 Q-network (Dog Game)")
+    export_weights(net1, output_path("weights_player1.txt"), "Player 1 Q-network (Dog Game)")
+    export_weights(net2, output_path("weights_player2.txt"), "Player 2 Q-network (Dog Game)")
     
     # Draw vector fields
     draw_vector_field(nets, env)
@@ -561,9 +568,10 @@ if __name__ == "__main__":
     plt.ylabel("Loss")
     plt.title("Dog Game - Nash-Q Training Loss")
     plt.legend()
-    plt.savefig("planning_loss.png")
+    loss_path = output_path("planning_loss.png")
+    plt.savefig(loss_path)
     plt.close()
-    print("Saved planning_loss.png")
+    print(f"Saved {loss_path}")
     
     # Visualization
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
@@ -584,8 +592,9 @@ if __name__ == "__main__":
             d2 = distance(final_dog, HOUSE2)
             
             ax.set_title(f"Rollout {i+1}: Dog to H1={d1:.3f}, to H2={d2:.3f}")
-            fig.savefig(f"rollout_{i+1}.png", dpi=150, bbox_inches="tight")
-            print(f"  Saved rollout_{i+1}.png | Start: ({s0[0]:.2f},{s0[1]:.2f}), ({s0[2]:.2f},{s0[3]:.2f})")
+            rollout_path = output_path(f"rollout_{i+1}.png")
+            fig.savefig(rollout_path, dpi=150, bbox_inches="tight")
+            print(f"  Saved {rollout_path} | Start: ({s0[0]:.2f},{s0[1]:.2f}), ({s0[2]:.2f},{s0[3]:.2f})")
     else:
         from matplotlib.widgets import Button
         
