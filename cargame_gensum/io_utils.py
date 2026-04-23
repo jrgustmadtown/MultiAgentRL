@@ -1,9 +1,17 @@
 import os
+import sys
 
 import torch.nn as nn
 
 
-OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.append(REPO_ROOT)
+
+from utilities.paths import module_output_dir
+
+
+OUTPUT_DIR = module_output_dir(__file__)
 
 
 def output_path(filename):

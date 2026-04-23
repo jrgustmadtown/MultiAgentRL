@@ -5,7 +5,14 @@ Two-player general-sum game where each player has their own reward function.
 Requires Nash equilibrium computation instead of minimax.
 """
 import argparse
+import os
+import sys
 import warnings
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.append(REPO_ROOT)
 
 try:
     from .config import GRID_SIZE, warnings_filter_message

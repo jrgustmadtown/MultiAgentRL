@@ -1,8 +1,16 @@
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.append(REPO_ROOT)
+
+from utilities.runtime import is_headless_matplotlib
 
 try:
     from .config import ACTION_DIRS, NUM_ACTIONS
@@ -161,8 +169,7 @@ def plot_training_losses(losses1, losses2):
 
 
 def run_rollout_visualization(env, policy_fn, house1, house2, horizon):
-    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-    is_headless = plt.get_backend().lower() == "agg" or not has_display
+    is_headless = is_headless_matplotlib(plt)
 
     fig, ax = plt.subplots(figsize=(8, 8))
 

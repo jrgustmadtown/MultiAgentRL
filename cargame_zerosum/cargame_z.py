@@ -5,6 +5,13 @@ Two-player zero-sum game where Player 1 (maximizer) and Player 2 (minimizer)
 navigate on a grid. Uses minimax Q-learning: max_a1 min_a2 Q(s,a1,a2)
 """
 import argparse
+import os
+import sys
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.append(REPO_ROOT)
 
 try:
     from .config import GRID_SIZE

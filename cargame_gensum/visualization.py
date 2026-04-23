@@ -1,8 +1,16 @@
 import os
+import sys
 import random
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.append(REPO_ROOT)
+
+from utilities.runtime import is_headless_matplotlib
 
 try:
     from .policy import rollout
@@ -83,8 +91,7 @@ def plot_training_losses(losses1, losses2, output_path):
 def run_rollout_visualization(env, policy, grid_size, output_path):
     valid_states = [s for s in env.states if (s[0], s[1]) != (s[2], s[3])]
 
-    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-    is_headless = plt.get_backend().lower() == "agg" or not has_display
+    is_headless = is_headless_matplotlib(plt)
 
     fig, ax = plt.subplots()
     idx = [0]

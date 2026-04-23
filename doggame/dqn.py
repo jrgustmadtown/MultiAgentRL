@@ -1,8 +1,15 @@
-from collections import deque
-import random
+import os
+import sys
 
 import torch
 import torch.nn as nn
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.append(REPO_ROOT)
+
+from utilities.replay import ReplayBuffer
 
 try:
     from .config import NUM_ACTIONS, device
@@ -32,22 +39,3 @@ class DQN(nn.Module):
 
     def forward(self, s):
         return self.net(s)
-
-
-class ReplayBuffer:
-    """Fixed-size buffer to store (state_tensor, target_q) tuples."""
-
-    def __init__(self, capacity=10000):
-        self.buffer = deque(maxlen=capacity)
-
-    def push(self, state_tensor, target_q):
-        self.buffer.append((state_tensor, target_q))
-
-    def sample(self, batch_size):
-        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
-        states = torch.stack([x[0] for x in batch])
-        targets = torch.stack([x[1] for x in batch])
-        return states, targets
-
-    def __len__(self):
-        return len(self.buffer)

@@ -17,3 +17,10 @@ python cargame_z.py [OPTIONS]
 - `policy.py`: policy extraction and rollout
 - `visualization.py`: rollout plots and loss plots
 - `io_utils.py`: output paths and weight export
+
+## Shared Utilities
+
+- `utilities/replay.py`: shared `ReplayBuffer`
+- `utilities/paths.py`: shared output directory/path helpers
+- `utilities/runtime.py`: shared runtime helpers (headless display detection)
+- `utilities/game_theory.py`: shared Nash helpers (wrapped by other games)

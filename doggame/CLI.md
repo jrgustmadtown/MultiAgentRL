@@ -21,3 +21,10 @@ python doggame.py [OPTIONS]
 - `policy.py`: policy extraction and rollout
 - `visualization.py`: rollouts, vector field, and loss plots
 - `io_utils.py`: output paths and weight export
+
+## Shared Utilities
+
+- `utilities/replay.py`: shared `ReplayBuffer`
+- `utilities/paths.py`: shared output directory/path helpers
+- `utilities/runtime.py`: shared runtime helpers (headless display detection)
+- `utilities/game_theory.py`: shared Nash helpers used via `game_theory.py`
